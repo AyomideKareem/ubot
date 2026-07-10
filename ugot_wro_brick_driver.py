@@ -623,7 +623,7 @@ def parse_args() -> DriverConfig:
     )
     parser.add_argument(
         "--ip",
-        default="10.196.72.185",
+        default="192.168.1.77",
         help="uGot robot local IP address. Defaults to 10.196.72.185.",
     )
     parser.add_argument("--forward-speed", type=int, default=30, help="Forward y_speed while driving clear track.")

@@ -737,7 +737,7 @@ def run(cfg: ControlConfig, dry_run: bool) -> None:
 
 def parse_args() -> Tuple[ControlConfig, bool]:
     parser = argparse.ArgumentParser(description="UGOT Ackermann FSM obstacle controller.")
-    parser.add_argument("--ip", default="10.196.72.185", help="UGOT controller IP address.")
+    parser.add_argument("--ip", default="192.168.1.77", help="UGOT controller IP address.")
     parser.add_argument("--direction", choices=("CW", "CCW"), default="CCW", help="Assigned lap direction.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without connecting to UGOT.")
     parser.add_argument("--no-debug", action="store_true", help="Disable OpenCV debug window.")
