@@ -90,6 +90,34 @@ class DriverConfig:
     model_path: Optional[str] = None
     reconnect_delay_s: float = 1.0
     max_reconnect_delay_s: float = 5.0
+    display_scale: float = 0.75
+    display_every_n_frames: int = 1
+    print_stats_every_s: float = 2.0
+
+
+@dataclass
+class RuntimeStats:
+    camera_fps: float = 0.0
+    display_fps: float = 0.0
+    loop_fps: float = 0.0
+    frame_age_ms: float = 0.0
+    missed_frames: int = 0
+
+
+class RateMeter:
+    def __init__(self, smoothing: float = 0.85) -> None:
+        self.smoothing = smoothing
+        self.last_t = 0.0
+        self.rate = 0.0
+
+    def tick(self, now: Optional[float] = None) -> float:
+        now = time.monotonic() if now is None else now
+        if self.last_t > 0.0:
+            dt = max(1e-6, now - self.last_t)
+            instant = 1.0 / dt
+            self.rate = instant if self.rate <= 0.0 else self.rate * self.smoothing + instant * (1.0 - self.smoothing)
+        self.last_t = now
+        return self.rate
 
 
 class BrickClassifier:
@@ -234,7 +262,12 @@ def decode_camera_frame(frame_bytes: Optional[bytes]) -> Optional[np.ndarray]:
     return frame
 
 
-def draw_debug_overlay(frame: np.ndarray, detection: BrickDetection, command: ControlCommand) -> np.ndarray:
+def draw_debug_overlay(
+    frame: np.ndarray,
+    detection: BrickDetection,
+    command: ControlCommand,
+    stats: Optional[RuntimeStats] = None,
+) -> np.ndarray:
     annotated = frame.copy()
     color_bgr = {
         BrickColor.RED: (0, 0, 255),
@@ -279,7 +312,32 @@ def draw_debug_overlay(frame: np.ndarray, detection: BrickDetection, command: Co
         2,
         cv2.LINE_AA,
     )
+    if stats is not None:
+        cv2.putText(
+            annotated,
+            (
+                f"cam {stats.camera_fps:4.1f} fps | "
+                f"loop {stats.loop_fps:4.1f} fps | "
+                f"view {stats.display_fps:4.1f} fps | "
+                f"age {stats.frame_age_ms:4.0f} ms | "
+                f"miss {stats.missed_frames}"
+            ),
+            (16, 94),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
     return annotated
+
+
+def resize_for_display(frame: np.ndarray, scale: float) -> np.ndarray:
+    if scale >= 0.99:
+        return frame
+    height, width = frame.shape[:2]
+    display_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    return cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
 
 
 def create_tuning_window() -> None:
@@ -368,6 +426,8 @@ class CameraWorker:
         self._last_frame_t = 0.0
         self._last_error: Optional[BaseException] = None
         self._got: Optional[ugot.UGOT] = None
+        self._fps_meter = RateMeter()
+        self._camera_fps = 0.0
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="ugot-camera-reader", daemon=True)
@@ -378,10 +438,10 @@ class CameraWorker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
-    def snapshot(self) -> Tuple[Optional[np.ndarray], float, Optional[BaseException]]:
+    def snapshot(self) -> Tuple[Optional[np.ndarray], float, Optional[BaseException], float]:
         with self._lock:
             frame = None if self._latest_frame is None else self._latest_frame.copy()
-            return frame, self._last_frame_t, self._last_error
+            return frame, self._last_frame_t, self._last_error, self._camera_fps
 
     def _run(self) -> None:
         delay_s = self.cfg.reconnect_delay_s
@@ -400,6 +460,7 @@ class CameraWorker:
                 with self._lock:
                     self._latest_frame = frame
                     self._last_frame_t = time.monotonic()
+                    self._camera_fps = self._fps_meter.tick(self._last_frame_t)
                     self._last_error = None
 
             except Exception as exc:
@@ -475,6 +536,10 @@ def run_driver(cfg: DriverConfig) -> None:
     camera = CameraWorker(cfg)
     motion = MotionClient(cfg)
     missed_frames = 0
+    loop_meter = RateMeter()
+    display_meter = RateMeter()
+    loop_count = 0
+    last_stats_print_t = 0.0
 
     if cfg.tune:
         create_tuning_window()
@@ -485,8 +550,12 @@ def run_driver(cfg: DriverConfig) -> None:
         print("[INFO] Camera and motion clients are running. Press 'q' in the video window or Ctrl+C to stop.")
 
         while True:
-            frame, last_frame_t, camera_error = camera.snapshot()
-            stale_frame = last_frame_t == 0.0 or time.monotonic() - last_frame_t > 0.75
+            loop_count += 1
+            now = time.monotonic()
+            loop_fps = loop_meter.tick(now)
+            frame, last_frame_t, camera_error, camera_fps = camera.snapshot()
+            frame_age_s = now - last_frame_t if last_frame_t > 0.0 else 999.0
+            stale_frame = last_frame_t == 0.0 or frame_age_s > 0.75
 
             if frame is None or stale_frame:
                 missed_frames += 1
@@ -512,12 +581,29 @@ def run_driver(cfg: DriverConfig) -> None:
             motion.move(command)
 
             if cfg.show_window:
-                annotated = draw_debug_overlay(frame, detection, command)
-                cv2.imshow("uGot WRO Brick Driver", annotated)
+                stats = RuntimeStats(
+                    camera_fps=camera_fps,
+                    display_fps=display_meter.rate,
+                    loop_fps=loop_fps,
+                    frame_age_ms=frame_age_s * 1000.0,
+                    missed_frames=missed_frames,
+                )
+                if loop_count % max(1, cfg.display_every_n_frames) == 0:
+                    annotated = draw_debug_overlay(frame, detection, command, stats)
+                    cv2.imshow("uGot WRO Brick Driver", resize_for_display(annotated, cfg.display_scale))
+                    display_meter.tick()
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     print("[INFO] Quit requested from OpenCV window.")
                     break
+
+            if now - last_stats_print_t >= cfg.print_stats_every_s:
+                print(
+                    f"[STATS] cam={camera_fps:.1f}fps "
+                    f"loop={loop_fps:.1f}fps view={display_meter.rate:.1f}fps "
+                    f"age={frame_age_s * 1000.0:.0f}ms missed={missed_frames}"
+                )
+                last_stats_print_t = now
 
             time.sleep(cfg.control_period_s)
 
@@ -557,6 +643,9 @@ def parse_args() -> DriverConfig:
     )
     parser.add_argument("--max-missed-frames", type=int, default=10, help="Stop after this many bad frames.")
     parser.add_argument("--no-window", action="store_true", help="Disable local OpenCV debug display.")
+    parser.add_argument("--display-scale", type=float, default=0.75, help="Scale OpenCV preview window. Lower values reduce display lag.")
+    parser.add_argument("--display-every", type=int, default=1, help="Draw every Nth processed frame in the OpenCV window.")
+    parser.add_argument("--stats-every", type=float, default=2.0, help="Print FPS/status stats every N seconds.")
     parser.add_argument("--tune", action="store_true", help="Show HSV trackbars for venue lighting calibration.")
     parser.add_argument("--model-path", default=None, help="Optional ONNX/PyTorch model path scaffold.")
     args = parser.parse_args()
@@ -572,6 +661,9 @@ def parse_args() -> DriverConfig:
         show_window=not args.no_window,
         tune=args.tune,
         model_path=args.model_path,
+        display_scale=max(0.1, min(1.0, args.display_scale)),
+        display_every_n_frames=max(1, args.display_every),
+        print_stats_every_s=max(0.5, args.stats_every),
     )
 
 

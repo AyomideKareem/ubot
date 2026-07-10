@@ -123,6 +123,33 @@ class ControlConfig:
     steering_servo_inverted: bool = False
     reconnect_delay_s: float = 1.0
     max_reconnect_delay_s: float = 5.0
+    display_scale: float = 0.75
+    display_every_n_frames: int = 1
+    print_stats_every_s: float = 2.0
+
+
+@dataclass
+class RuntimeStats:
+    camera_fps: float = 0.0
+    display_fps: float = 0.0
+    loop_fps: float = 0.0
+    frame_age_ms: float = 0.0
+
+
+class RateMeter:
+    def __init__(self, smoothing: float = 0.85) -> None:
+        self.smoothing = smoothing
+        self.last_t = 0.0
+        self.rate = 0.0
+
+    def tick(self, now: Optional[float] = None) -> float:
+        now = time.monotonic() if now is None else now
+        if self.last_t > 0.0:
+            dt = max(1e-6, now - self.last_t)
+            instant = 1.0 / dt
+            self.rate = instant if self.rate <= 0.0 else self.rate * self.smoothing + instant * (1.0 - self.smoothing)
+        self.last_t = now
+        return self.rate
 
 
 class UGOTAckermannHardware:
@@ -146,6 +173,9 @@ class UGOTAckermannHardware:
         self.got: Optional[ugot.UGOT] = None
         self._last_command: Optional[ControlCommand] = None
         self._next_reconnect_t = 0.0
+        self._camera_fps_meter = RateMeter()
+        self.camera_fps = 0.0
+        self.last_frame_t = 0.0
 
     def connect(self) -> None:
         if self.dry_run:
@@ -190,6 +220,8 @@ class UGOTAckermannHardware:
             self._handle_ugot_exception("read_camera_data", RuntimeError("Invalid camera frame bytes"))
             return None
 
+        self.last_frame_t = time.monotonic()
+        self.camera_fps = self._camera_fps_meter.tick(self.last_frame_t)
         return frame
 
     def set_drive_speed(self, speed: int) -> None:
@@ -508,6 +540,7 @@ def draw_debug(
     frame: np.ndarray,
     command: ControlCommand,
     obstacles: Sequence[DetectedObstacle],
+    stats: Optional[RuntimeStats] = None,
 ) -> np.ndarray:
     annotated = frame.copy()
     h, w = annotated.shape[:2]
@@ -555,7 +588,31 @@ def draw_debug(
         2,
         cv2.LINE_AA,
     )
+    if stats is not None:
+        cv2.putText(
+            annotated,
+            (
+                f"cam {stats.camera_fps:4.1f} fps | "
+                f"loop {stats.loop_fps:4.1f} fps | "
+                f"view {stats.display_fps:4.1f} fps | "
+                f"age {stats.frame_age_ms:4.0f} ms"
+            ),
+            (16, 92),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
     return annotated
+
+
+def resize_for_display(frame: np.ndarray, scale: float) -> np.ndarray:
+    if scale >= 0.99:
+        return frame
+    height, width = frame.shape[:2]
+    display_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    return cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -614,15 +671,23 @@ def is_transient_network_error(exc: BaseException) -> bool:
 def run(cfg: ControlConfig, dry_run: bool) -> None:
     hardware = UGOTAckermannHardware(cfg, dry_run=dry_run)
     fsm = NavigationFSM(cfg)
+    loop_meter = RateMeter()
+    display_meter = RateMeter()
+    loop_count = 0
+    last_stats_print_t = 0.0
 
     try:
         hardware.connect()
         print("[INFO] Controller running. Press Ctrl+C to stop.")
 
         while True:
+            loop_count += 1
+            now = time.monotonic()
+            loop_fps = loop_meter.tick(now)
             hardware.reconnect_if_needed()
             frame = hardware.read_camera_frame()
             frame_shape = frame.shape if frame is not None else None
+            frame_age_s = now - hardware.last_frame_t if hardware.last_frame_t > 0.0 else 999.0
 
             detected_obstacles = get_detected_obstacles_from_npu(frame)
             lane_center_norm = estimate_lane_center(frame)
@@ -637,9 +702,28 @@ def run(cfg: ControlConfig, dry_run: bool) -> None:
             )
 
             if cfg.show_debug and frame is not None:
-                cv2.imshow("UGOT Ackermann FSM", draw_debug(frame, command, detected_obstacles))
+                stats = RuntimeStats(
+                    camera_fps=hardware.camera_fps,
+                    display_fps=display_meter.rate,
+                    loop_fps=loop_fps,
+                    frame_age_ms=frame_age_s * 1000.0,
+                )
+                if loop_count % max(1, cfg.display_every_n_frames) == 0:
+                    cv2.imshow(
+                        "UGOT Ackermann FSM",
+                        resize_for_display(draw_debug(frame, command, detected_obstacles, stats), cfg.display_scale),
+                    )
+                    display_meter.tick()
                 if (cv2.waitKey(1) & 0xFF) == ord("q"):
                     break
+
+            if now - last_stats_print_t >= cfg.print_stats_every_s:
+                print(
+                    f"[STATS] cam={hardware.camera_fps:.1f}fps "
+                    f"loop={loop_fps:.1f}fps view={display_meter.rate:.1f}fps "
+                    f"age={frame_age_s * 1000.0:.0f}ms"
+                )
+                last_stats_print_t = now
 
             time.sleep(cfg.control_period_s)
 
@@ -657,6 +741,9 @@ def parse_args() -> Tuple[ControlConfig, bool]:
     parser.add_argument("--direction", choices=("CW", "CCW"), default="CCW", help="Assigned lap direction.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without connecting to UGOT.")
     parser.add_argument("--no-debug", action="store_true", help="Disable OpenCV debug window.")
+    parser.add_argument("--display-scale", type=float, default=0.75, help="Scale OpenCV preview window. Lower values reduce display lag.")
+    parser.add_argument("--display-every", type=int, default=1, help="Draw every Nth processed frame in the OpenCV window.")
+    parser.add_argument("--stats-every", type=float, default=2.0, help="Print FPS/status stats every N seconds.")
     parser.add_argument("--cruise-speed", type=int, default=45)
     parser.add_argument("--avoid-speed", type=int, default=32)
     parser.add_argument("--max-steer", type=float, default=28.0)
@@ -669,6 +756,9 @@ def parse_args() -> Tuple[ControlConfig, bool]:
         avoid_speed=args.avoid_speed,
         max_steering_angle_deg=args.max_steer,
         show_debug=not args.no_debug,
+        display_scale=max(0.1, min(1.0, args.display_scale)),
+        display_every_n_frames=max(1, args.display_every),
+        print_stats_every_s=max(0.5, args.stats_every),
     )
     return cfg, args.dry_run
 
