@@ -16,6 +16,7 @@ All scripts communicate with the uGot robot over Wi-Fi.
 - `twowheeled.py` - Self-balancing car controller. Maintains upright balance while moving forward/backward.
 - `ugot_balance_only_test.py` - Test script for balance mode without movement.
 - `ugot_balance_diagnostics.py` - Interactive diagnostic sequence for balance-hold and slow forward/backward movement.
+- `ugot_custom_balance_lab.py` - Guarded custom-control lab for SDK capability probing, IMU calibration, pitch-axis checks, low-power motor sign tests, and custom PID experiments when not using UGOT's built-in balance mode.
 - `ugot_ackermann_fsm_driver.py` - Ackermann steering controller with finite state machine for obstacle-aware navigation. Detects and avoids red/green bricks.
 - `ugot_wro_brick_driver.py` - Brick-detection driver for WRO-style obstacle handling using mecanum wheels. Includes HSV-based color detection.
 - `requirements.txt` - Python dependencies for the project.
@@ -63,6 +64,29 @@ python twowheeled.py --ip 192.168.1.77 --speed -8 --duration 10
 ```
 **Note:** Hold the robot upright on a clear, level floor before starting. Press Ctrl+C to stop.
 
+### Custom Balance-Control Lab
+Only use this if you are intentionally testing a custom controller outside the
+UGOT built-in balance-car mode. Start by checking what the installed SDK exposes:
+```bash
+python ugot_custom_balance_lab.py --ip 192.168.1.77 --probe-sdk
+```
+
+If compatible IMU methods exist, run stationary calibration and pitch-axis checks:
+```bash
+python ugot_custom_balance_lab.py --ip 192.168.1.77 --calibrate
+python ugot_custom_balance_lab.py --ip 192.168.1.77 --axis-test
+```
+
+If compatible direct motor methods exist, run only low-power sign tests with the
+wheels safely supported:
+```bash
+python ugot_custom_balance_lab.py --ip 192.168.1.77 --direction-test
+```
+
+The custom PID loop is guarded and refuses to run while the robot reports
+chassis mode `balance`, because that would stack a laptop PID on top of UGOT's
+firmware balance controller.
+
 ### Ackermann Steering with FSM Navigation
 ```bash
 python ugot_ackermann_fsm_driver.py --ip 10.196.72.185 --direction CCW
@@ -104,5 +128,6 @@ python ugot_wro_brick_driver.py --tune
 - The self-balancing script uses the UGOT firmware balance controller, not a local PID loop; the Python SDK does not expose balance PID gains
 - Do not use direct wheel commands when in balance mode; use the balance API instead
 - If balance-only mode fails, check chassis mode, wheel ports, battery level, tire grip, center of mass, and IMU/calibration before tuning movement behavior
+- Do not run `ugot_custom_balance_lab.py --run-custom-pid` in UGOT `balance` chassis mode unless you deliberately force it and accept the risk
 - The brick driver includes a simple HSV-based detection baseline that can be tuned further
 - Press Ctrl+C to safely stop any running driver
