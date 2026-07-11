@@ -96,15 +96,21 @@ Run the museum-guide stack with fake hardware first:
 python -m museum_guide.runner --duration 10
 ```
 
+To use your own local artifact catalogue instead of the fake AI provider:
+```bash
+python -m museum_guide.runner --vision-provider local --catalog museum_catalog/artifacts.json --catalog-threshold 0.68 --duration 10
+```
+
 Physical movement is guarded and requires explicit confirmation:
 ```bash
-python -m museum_guide.runner --hardware --confirm-physical --ip 192.168.1.77 --duration 10
+python -m museum_guide.runner --hardware --confirm-physical --vision-provider local --catalog museum_catalog/artifacts.json --catalog-threshold 0.68 --ip 192.168.1.77 --duration 10
 ```
 
 Do not run physical museum navigation until balance diagnostics pass and the
 installed SDK methods for distance sensing, camera, balance-mode turning, and
 text-to-speech have been verified. See `docs/research.md` and
-`docs/museum_guide.md`.
+`docs/museum_guide.md`. Add local catalogue entries using the template in
+`museum_catalog/artifacts.example.json`.
 
 ### Ackermann Steering with FSM Navigation
 ```bash

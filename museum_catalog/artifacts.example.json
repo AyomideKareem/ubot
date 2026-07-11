@@ -1,0 +1,20 @@
+{
+  "artifacts": [
+    {
+      "id": "artifact_001",
+      "name": "Example Bronze Mask",
+      "category": "Sculpture",
+      "short_description": "This is a bronze-colored mask with visible facial features. Its exact identity should be verified against the museum catalogue.",
+      "visible_evidence": [
+        "bronze-colored surface",
+        "mask-like facial form"
+      ],
+      "reference_images": [
+        "images/artifact_001/front.jpg",
+        "images/artifact_001/side.jpg",
+        "images/artifact_001/close.jpg"
+      ]
+    }
+  ]
+}
+

@@ -5,6 +5,7 @@ import time
 from .ai import CachedVisionAIProvider, FakeVisionAIProvider
 from .config import MuseumGuideConfig
 from .hardware import FakeMuseumHardware, UGOTMuseumHardware
+from .local_catalog import LocalCatalogVisionProvider
 from .navigation import MuseumGuideController
 from .telemetry import CsvTelemetry, StructuredLogger
 
@@ -22,6 +23,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-jsonl", default="")
     parser.add_argument("--telemetry-csv", default="")
     parser.add_argument("--desired-artifact-distance", type=float, default=3.0)
+    parser.add_argument("--vision-provider", choices=("fake", "local"), default="fake")
+    parser.add_argument("--catalog", default="museum_catalog/artifacts.json")
+    parser.add_argument("--catalog-threshold", type=float, default=0.68)
     return parser
 
 
@@ -40,7 +44,10 @@ def main(argv=None) -> int:
     hardware = UGOTMuseumHardware(cfg) if args.hardware else FakeMuseumHardware(cfg)
     logger = StructuredLogger(args.log_jsonl or None)
     telemetry = CsvTelemetry(args.telemetry_csv) if args.telemetry_csv else None
-    ai = CachedVisionAIProvider(FakeVisionAIProvider())
+    if args.vision_provider == "local":
+        ai = CachedVisionAIProvider(LocalCatalogVisionProvider(args.catalog, args.catalog_threshold))
+    else:
+        ai = CachedVisionAIProvider(FakeVisionAIProvider())
     controller = MuseumGuideController(cfg, hardware, ai, logger=logger, telemetry=telemetry)
 
     start = time.monotonic()

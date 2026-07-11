@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import time
 import unittest
 
@@ -7,6 +10,7 @@ from museum_guide.config import MuseumGuideConfig
 from museum_guide.hardware import FakeMuseumHardware
 from museum_guide.hardware import HardwareCapabilityError
 from museum_guide.hardware import UGOTMuseumHardware
+from museum_guide.local_catalog import LocalCatalogVisionProvider
 from museum_guide.models import (
     AIResult,
     DetectionKind,
@@ -20,6 +24,7 @@ from museum_guide.models import (
 )
 from museum_guide.navigation import MuseumGuideController
 from museum_guide.artifacts import ArtifactTrack
+from PIL import Image, ImageDraw
 
 
 def cfg() -> MuseumGuideConfig:
@@ -389,6 +394,65 @@ class MuseumGuideTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             result_from_json(payload)
+
+    def test_local_catalog_matches_reference_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path, query = build_test_catalog(tmp, identical_query=True)
+            provider = LocalCatalogVisionProvider(catalog_path, min_confidence=0.80)
+            result = provider.identify(PerceptionFrame(timestamp=time.monotonic(), image=query))
+            self.assertEqual(result.candidate_name, "Test Bronze Mask")
+            self.assertGreaterEqual(result.confidence, 0.80)
+            self.assertIn("local reference image", result.visible_evidence[0])
+
+    def test_local_catalog_rejects_low_confidence_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path, _ = build_test_catalog(tmp)
+            provider = LocalCatalogVisionProvider(catalog_path, min_confidence=0.98)
+            unrelated = make_test_image((20, 20, 220), "X")
+            result = provider.identify(PerceptionFrame(timestamp=time.monotonic(), image=unrelated))
+            self.assertEqual(result.candidate_name, "unknown")
+            self.assertTrue(result.needs_human_review)
+
+    def test_local_catalog_refuses_person_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path, query = build_test_catalog(tmp, identical_query=True)
+            provider = LocalCatalogVisionProvider(catalog_path, min_confidence=0.80)
+            result = provider.identify(PerceptionFrame(timestamp=time.monotonic(), image=query, detections=[person()]))
+            self.assertEqual(result.category, "person")
+            self.assertIn("person_detected", result.safety_or_privacy_flags)
+
+
+def make_test_image(color, text):
+    image = Image.new("RGB", (96, 96), color)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 20, 76, 76), outline=(255, 255, 255), width=4)
+    draw.text((36, 38), text, fill=(255, 255, 255))
+    return image
+
+
+def build_test_catalog(tmp, identical_query=False):
+    mask_dir = "%s/images/mask" % tmp
+    os.makedirs(mask_dir)
+    reference = make_test_image((145, 92, 45), "M")
+    reference_path = "%s/front.png" % mask_dir
+    reference.save(reference_path)
+    catalog = {
+        "artifacts": [
+            {
+                "id": "mask_001",
+                "name": "Test Bronze Mask",
+                "category": "Sculpture",
+                "short_description": "This is trusted local metadata for the test mask.",
+                "visible_evidence": ["bronze-colored mask reference"],
+                "reference_images": ["images/mask/front.png"],
+            }
+        ]
+    }
+    catalog_path = "%s/artifacts.json" % tmp
+    with open(catalog_path, "w", encoding="utf-8") as handle:
+        json.dump(catalog, handle)
+    query = reference if identical_query else make_test_image((150, 95, 50), "M")
+    return catalog_path, query
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ Ackermann, and balance diagnostics remain unchanged.
 - `safety.py`: emergency stop, stale sensor, person-distance, excessive-tilt, balance-active, and obstacle-zone checks.
 - `artifacts.py`: multi-frame camera-based artifact candidate tracker; people clear the candidate tracker.
 - `ai.py`: provider-independent structured AI interface plus fake/cached provider.
+- `local_catalog.py`: local reference-image matcher that maps captured images to trusted catalogue metadata.
 - `speech.py`: non-blocking speech queue facade; failures are counted and do not disable balance.
 - `telemetry.py`: JSONL structured logs and optional CSV telemetry.
 - `navigation.py`: explicit state machine for patrol, artifact approach, capture, identification, presentation, back-away, turn, recovery, shutdown, and fault.
@@ -43,6 +44,45 @@ Key fields in `MuseumGuideConfig`:
 - `max_capture_attempts`, `max_recovery_attempts`
 - `state_timeouts_s`
 - `privacy_blur_people`, `retain_images`
+
+## Local Catalogue Recognition
+
+If you do not have a cloud vision model, use the local catalogue provider. This
+does not train a new neural network. It builds an image-matching index from your
+reference photos each time the program starts.
+
+Create this layout:
+
+```text
+museum_catalog/
+  artifacts.json
+  images/
+    bronze_mask/
+      front.jpg
+      side.jpg
+      close.jpg
+```
+
+Each entry in `artifacts.json` should contain:
+
+- `id`: stable unique ID, for example `bronze_mask_001`
+- `name`: artifact name to speak
+- `category`: broad category such as `Sculpture`
+- `short_description`: concise factual visitor description
+- `visible_evidence`: visible features that support the match
+- `reference_images`: paths relative to `museum_catalog/`
+
+Start from `museum_catalog/artifacts.example.json`, save your real file as
+`museum_catalog/artifacts.json`, then run:
+
+```bash
+python -m museum_guide.runner --vision-provider local --catalog museum_catalog/artifacts.json --catalog-threshold 0.68 --duration 10
+```
+
+The matcher returns `unknown` when the best match is below the configured
+threshold. The default is `0.68`, which is about 68 percent. Use
+`--catalog-threshold` to tune this; raise it if false matches happen, lower it
+only if correct matches are being missed.
 
 ## Safe Physical Test Procedure
 
