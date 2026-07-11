@@ -17,6 +17,9 @@ All scripts communicate with the uGot robot over Wi-Fi.
 - `ugot_balance_only_test.py` - Test script for balance mode without movement.
 - `ugot_balance_diagnostics.py` - Interactive diagnostic sequence for balance-hold and slow forward/backward movement.
 - `ugot_custom_balance_lab.py` - Guarded custom-control lab for SDK capability probing, IMU calibration, pitch-axis checks, low-power motor sign tests, and custom PID experiments when not using UGOT's built-in balance mode.
+- `museum_guide/` - Safe museum-guide architecture with fake-hardware simulation, state machine, safety supervisor, artifact tracking, AI schema, speech queue, and physical UGOT adapter.
+- `tests/` - Unit/simulation tests for the museum-guide safety and navigation logic.
+- `docs/` - Research notes, SDK constraints, architecture, and safe physical test procedures.
 - `ugot_ackermann_fsm_driver.py` - Ackermann steering controller with finite state machine for obstacle-aware navigation. Detects and avoids red/green bricks.
 - `ugot_wro_brick_driver.py` - Brick-detection driver for WRO-style obstacle handling using mecanum wheels. Includes HSV-based color detection.
 - `requirements.txt` - Python dependencies for the project.
@@ -86,6 +89,22 @@ python ugot_custom_balance_lab.py --ip 192.168.1.77 --direction-test
 The custom PID loop is guarded and refuses to run while the robot reports
 chassis mode `balance`, because that would stack a laptop PID on top of UGOT's
 firmware balance controller.
+
+### Museum Guide Simulation
+Run the museum-guide stack with fake hardware first:
+```bash
+python -m museum_guide.runner --duration 10
+```
+
+Physical movement is guarded and requires explicit confirmation:
+```bash
+python -m museum_guide.runner --hardware --confirm-physical --ip 192.168.1.77 --duration 10
+```
+
+Do not run physical museum navigation until balance diagnostics pass and the
+installed SDK methods for distance sensing, camera, balance-mode turning, and
+text-to-speech have been verified. See `docs/research.md` and
+`docs/museum_guide.md`.
 
 ### Ackermann Steering with FSM Navigation
 ```bash
